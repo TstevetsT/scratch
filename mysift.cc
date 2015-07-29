@@ -144,7 +144,7 @@ SiftTest::SiftTest ()
   nodeSpeed = 40.0;
   txpDistance = 250.0;
   algo = SIFT;
-  mobilityModel = RANDOMWALK2;
+  mobilityModel = RANDOMWAYPOINT;
   xLength = 2000;
   yLength = 2000;
   rate = ".512kbps";

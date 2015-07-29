@@ -21,6 +21,10 @@
  *
  * Work Completed to satisfy requirements for Masters of Science in 
  * Electrical Engineering
+ * USAGE:
+ * CONSTRAINTS:
+ * ToDo:
+ *   -Random Number Variable seed and run values are not changing test results
  */
 
 #include <sstream>
@@ -64,6 +68,7 @@ public:
                                            // returns true on successful configuration
   void Run ();                             // Run simulation
   void Report (std::ostream & os);         // Report results
+  
 
 private:
   uint32_t nNodes;       // # of wireless nodes
@@ -73,14 +78,25 @@ private:
   double ppers;          // Packets/Second
   uint32_t packetSize;   // Packet size
   double dataStartTime;  // time to start sending data
-  double nodeSpeed;      // Node movement speed
-  double txpDistance;    // Wireless Transmission Range
+  double nodePauseTime;                     // Pause time between nodes movement
+  double nodeMaxSpeed;      // Node movement speed
+  double TxMaxRange;    // Wireless Transmission Range
   std::string rate;
   std::string dataMode;
   std::string phyMode;
-  int run;
+  uint32_t run;
+  uint32_t seedval;
   int initGridSpacing;              // distance between nodes in grid topology
   bool pcap;             // PCAP enable/disable
+  double xmax;                 // x length of Mobility area
+  double ymax;                 // y length of Mobility area
+  double zmax;                  
+  double xDelta;                    // x delta b/t two consecutive nodes
+  double yDelta;                    // y delta b/t two consectutive nodes
+  double zDelta;
+
+
+
   NodeContainer mobileNodes;
 //  NodeContainer sourceNodes;
 //  NodeContainer sinkNodes;
@@ -108,39 +124,55 @@ int main (int argc, char **argv)
 }
 
 DGGFtest::DGGFtest ()   // INITIALIZE ALL VARIABLES
- :  nNodes (100),
-    nSinks (1),
-    totalTime (1000.0),
-    dataTime (100000.0),
-    ppers (1),
-    packetSize (64),
-    dataStartTime (2.0),
-    nodeSpeed (25.0),
-    txpDistance (250.0),
-    rate (".512kbps"),
-    dataMode ("DsssRate11Mbps"),
-    phyMode ("DsssRate11Mbps"),
-    run (1),
-    initGridSpacing (180),
-    pcap (false)
 {
+  nNodes = 30;
+  nSinks = 2;
+  totalTime = 1000;
+  dataTime = totalTime-totalTime*.01;
+  ppers = 1;
+  packetSize = 64;
+  dataStartTime = 2.0;     
+  nodePauseTime = 0;
+  nodeMaxSpeed = 20.0;
+  TxMaxRange = 250.0;
+  xmax = 1500.0;
+  ymax = 300.0;
+  zmax = 1.0;
+  xDelta = 200;
+  yDelta = 200;
+  zDelta = 200;
+  initGridSpacing = xmax / xDelta;
+  rate = ".512kbps";
+  dataMode = "DsssRate11Mbps";
+  phyMode = "DsssRate11Mbps";
+  seedval=1;
+  run = 1;
+//  algo = SIFT;
+// mobilityModel = RANDOMWALK2;
+
+//  settlingTime = 6;
+  pcap = false;
 }
 
 bool
 DGGFtest::Configure (int argc, char **argv)
 {
   // Enable Sift logs by default. Comment this if too noisy
-  LogComponentEnable("SiftRouting", LOG_LEVEL_ALL);
+  // LogComponentEnable("SiftRouting", LOG_LEVEL_ALL);
+  // LogComponentEnable("SiftRouting", LOG_LEVEL_DEBUG);
 
-  SeedManager::SetSeed (12345);
+  ns3::SeedManager::SetSeed (12345);
+  ns3::RngSeedManager::SetRun(run);
   CommandLine cmd;
   cmd.AddValue ("run", "Run index (for setting repeatable seeds)", run);
   cmd.AddValue ("nNodes", "Number of wifi nodes", nNodes);
   cmd.AddValue ("nSinks", "Number of SINK traffic nodes", nSinks);
   cmd.AddValue ("rate", "CBR traffic rate(in kbps), Default:8", rate);
-  cmd.AddValue ("nodeSpeed", "Node speed in RandomWayPoint model, Default:20", nodeSpeed);
+  cmd.AddValue ("nodeMaxSpeed", "Node speed in RandomWayPoint model, Default:20", nodeMaxSpeed);
   cmd.AddValue ("packetSize", "The packet size", packetSize);
-  cmd.AddValue ("txpDistance", "Specify node's transmit range, Default:250", txpDistance);
+  cmd.AddValue ("TxMaxRange", "Specify node's transmit range, Default:250", TxMaxRange);
+  cmd.AddValue ("nodePauseTime", "Specify node max pause time, Default:0" , nodePauseTime);
+  cmd.AddValue ("seedval", "Specify a new seed for the run.  Default:1", seedval);
   cmd.Parse (argc, argv);
   return true;
 }
@@ -168,30 +200,104 @@ DGGFtest::Report (std::ostream &)
 void
 DGGFtest::CreateNodes ()
 {
-  std::cout << "Creating " << (unsigned)nNodes << " mobileNodes " << initGridSpacing << " m apart.\n";
-//  sinkNodes.Create (1);
+  std::cout << "Creating " << (unsigned)nNodes << " Nodes.\n";
   mobileNodes.Create (nNodes);
-//  sourceNodes.Create (1);
- 
-//  uint32_t lNode=nNodes-1;
-//  std::cout << "lNode is:" << (unsigned)lNode << " \n";
   for (uint32_t i = 0; i < nNodes; ++i)  // This will name the mobile nodes consecutive numbers
     { 
       std::ostringstream os;
       os << "node-" << i;
       Names::Add (os.str (), mobileNodes.Get (i)); 
     }
-  // Create starting grid
+
   MobilityHelper mobility;
-  mobility.SetMobilityModel ("ns3::GaussMarkovMobilityModel",
-                               "Bounds", BoxValue (Box (0,1000,0,1000,0,200)), 
-                               "MeanVelocity", StringValue ("ns3::UniformRandomVariable[Min=16|Max=26]"));   //Speed range in m/s
+
+
+  //// 3D Random Position Allocation and 3D RandomWaypointMobilityModel Start
+  int64_t streamIndex = 0; // used to get consistent mobility across scenarios
+  ObjectFactory pos;
+  pos.SetTypeId ("ns3::RandomBoxPositionAllocator");
+  std::stringstream ssxmax;
+  std::stringstream ssymax;
+  std::stringstream sszmax;
+  ssxmax << "ns3::UniformRandomVariable[Min=0.0|Max=" << xmax << "]";
+  ssymax << "ns3::UniformRandomVariable[Min=0.0|Max=" << ymax << "]";
+  sszmax << "ns3::UniformRandomVariable[Min=0.0|Max=" << zmax << "]";
+  pos.Set ("X", StringValue (ssxmax.str ()));
+  pos.Set ("Y", StringValue (ssymax.str ()));
+  pos.Set ("Z", StringValue (sszmax.str ()));
+  Ptr<PositionAllocator> taPositionAlloc = pos.Create ()->GetObject<PositionAllocator> ();
+  streamIndex += taPositionAlloc->AssignStreams (streamIndex);
+  std::stringstream ssSpeed;
+  ssSpeed << "ns3::UniformRandomVariable[Min=0.0|Max=" << nodeMaxSpeed << "]";
+  std::stringstream ssPause;
+  ssPause << "ns3::ConstantRandomVariable[Constant=" << nodePauseTime << "]";
+  mobility.SetMobilityModel ("ns3::RandomWaypointMobilityModel",
+                                  "Speed", StringValue (ssSpeed.str ()),
+                                  "Pause", StringValue (ssPause.str ()),
+                                  "PositionAllocator", PointerValue (taPositionAlloc));
+  mobility.SetPositionAllocator (taPositionAlloc);
+  //\\ 3D Random Position Allocation and 3D RandomWaypointMobilityModel End
+
+
+/*
+  //// Node Position Allocation 2D Grid Start
+  std::cout << "Laying out a 2D grid of nodes " << initGridSpacing << " wide.\n";
+  std::cout << "Grid spacing is x=" << xDelta << " meters and y=" << yDelta << " meters.\n";
+  mobility.SetPositionAllocator ("ns3::GridPositionAllocator",
+                                      "MinX", DoubleValue (0.0),
+                                      "MinY", DoubleValue (0.0),
+                                      "DeltaX", DoubleValue (xDelta),
+                                      "DeltaY", DoubleValue (yDelta),
+                                      "GridWidth", UintegerValue (initGridSpacing),
+                                      "LayoutType", StringValue ("RowFirst"));
+  //\\ Node Positin Allocation 2D Grid Complete
+*/
+/*
+  //// Node Mobility Random walk 2d
+  std::stringstream convert;
+  convert << nodeMaxSpeed;
+  std::string speed;
+  std::string pause;
+  speed = "ns3::UniformRandomVariable[Min=1.0|Max=" + convert.str () + "]";
+  convert.str ("");
+  convert.clear ();
+  convert << nodePauseTime;
+  pause = "ns3::ConstantRandomVariable[Constant=" + convert.str () + "s]";
+  adhocMobility.SetMobilityModel ("ns3::RandomDirection2MobilityModel",
+                                      "Mode", StringValue ("Time"),
+                                      "Pause", StringValue (pause),
+                                      "Speed", StringValue (speed),
+                                      "Bounds", RectangleValue (Rectangle (0.0, xLength, 0.0, yLength)));
+  //\\ Node Mobility Random Walk 2d Complete
+*/
+
+/*
+  //// 3D Random Box Position Allocator Start
+  std::stringstream ssxmax;
+  std::stringstream ssymax;
+  std::stringstream sszmax;
+  ssxmax << "ns3::UniformRandomVariable[Min=0.0|Max=" << xmax << "]";
+  ssymax << "ns3::UniformRandomVariable[Min=0.0|Max=" << ymax << "]";
+  sszmax << "ns3::UniformRandomVariable[Min=0.0|Max=" << zmax << "]";
   mobility.SetPositionAllocator ("ns3::RandomBoxPositionAllocator",
-        "X", StringValue ("ns3::UniformRandomVariable[Min=0|Max=1000]"),
-        "Y", StringValue ("ns3::UniformRandomVariable[Min=0|Max=1000]"),
-        "Z", StringValue ("ns3::UniformRandomVariable[Min=0|Max=200]"));
+        "X", StringValue (ssxmax.str ()),
+        "Y", StringValue (ssymax.str ()),
+        "Z", StringValue (sszmax.str ()));
+  //\\ 3D Random Box Position Allocator End
+
+  ////      3D GaussMarkov Mobility Model Start
+  std::stringstream ssSpeed;
+  ssSpeed << "ns3::UniformRandomVariable[Min=16|Max=" << nodeMaxSpeed << "]";        
+  mobility.SetMobilityModel ("ns3::GaussMarkovMobilityModel",
+                               "Bounds", BoxValue (Box (0,xmax,0,ymax,0,zmax)),   
+                               "MeanVelocity", StringValue (ssSpeed.str ()));
+  //\\      3D GaussMarkov Mobility Model End   
+
+
+*/
   mobility.Install (mobileNodes);
-}
+} //\\ DGGFtest::CreateNodes ()
+
 
 void
 DGGFtest::CreateDevices ()
@@ -209,7 +315,7 @@ DGGFtest::CreateDevices ()
 
   YansWifiChannelHelper wifiChannel;
   wifiChannel.SetPropagationDelay ("ns3::ConstantSpeedPropagationDelayModel");
-  wifiChannel.AddPropagationLoss ("ns3::RangePropagationLossModel", "MaxRange", DoubleValue (txpDistance));
+  wifiChannel.AddPropagationLoss ("ns3::RangePropagationLossModel", "MaxRange", DoubleValue (TxMaxRange));
   wifiPhy.SetChannel (wifiChannel.Create ());
   // Add a non-QoS upper mac, and disable rate control
   NqosWifiMacHelper wifiMac = NqosWifiMacHelper::Default ();
@@ -229,7 +335,7 @@ DGGFtest::CreateDevices ()
   //NS_LOG_INFO ("Configure Tracing.");
 
   AsciiTraceHelper ascii;
-  Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream ("siftTrace.tr");
+  Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream ("1.tr");
   wifiPhy.EnableAsciiAll (stream);
 }
 
@@ -264,23 +370,6 @@ void
 DGGFtest::InstallApplications ()
 {
   uint16_t port = 9;
- 
-      
-/*
-      PacketSinkHelper sink ("ns3::UdpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), port));
-      ApplicationContainer apps_sink = sink.Install (sinkNodes.Get (0));
-      apps_sink.Start (Seconds (0.0));
-      apps_sink.Stop (Seconds (totalTime - 1));
-      OnOffHelper onoff1 ("ns3::UdpSocketFactory", Address (InetSocketAddress (allInterfaces.GetAddress (0), port)));
-      onoff1.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1.0]"));
-      onoff1.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0.0]"));
-      onoff1.SetAttribute ("PacketSize", UintegerValue (packetSize));
-      onoff1.SetAttribute ("DataRate", DataRateValue (DataRate (rate)));
-      ApplicationContainer apps1 = onoff1.Install (sourceNodes.Get (nNodes - nSinks));
-      apps1.Start (Seconds (dataStartTime));
-      apps1.Stop (Seconds (dataTime));
-*/
-
   double randomStartTime = (1 / ppers) / nSinks;
   for (uint32_t i = 0; i < nSinks; ++i)
     {
